@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 
 import os
-TOKEN = os.getenv("8786051738:AAHRu0V5a3FbDQqdyHCLiRwJPCFk0Sxt0hQ")
+TOKEN = os.getenv("TOKEN")
 ADMIN_ID = 2097179248  # your Telegram ID
 
 # ================= DATABASE =================
