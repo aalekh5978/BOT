@@ -9,7 +9,8 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
-TOKEN = "8786051738:AAHRu0V5a3FbDQqdyHCLiRwJPCFk0Sxt0hQ"
+import os
+TOKEN = os.getenv("8786051738:AAHRu0V5a3FbDQqdyHCLiRwJPCFk0Sxt0hQ")
 ADMIN_ID = 2097179248  # your Telegram ID
 
 # ================= DATABASE =================
