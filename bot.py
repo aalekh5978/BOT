@@ -1,4 +1,5 @@
 import sqlite3
+import os
 from telegram import (
     Update, ReplyKeyboardMarkup,
     InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,9 +10,8 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
-import os
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 2097179248  # your Telegram ID
+ADMIN_ID = 2097179248  # change if needed
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
@@ -22,8 +22,15 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     name TEXT,
     balance INTEGER DEFAULT 0,
-    upi TEXT,
-    referred_by INTEGER
+    upi TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS gmail_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gmail TEXT,
+    status TEXT
 )
 """)
 
@@ -37,179 +44,129 @@ CREATE TABLE IF NOT EXISTS withdrawals (
 )
 """)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT,
-    reward INTEGER,
-    status TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS user_tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    task_id INTEGER,
-    status TEXT
-)
-""")
-
 conn.commit()
 
 # ================= MENU =================
 def menu():
     return ReplyKeyboardMarkup([
-        ["🎯 Earn Tasks", "💰 Balance"],
-        ["🏧 Withdrawal", "📜 History"],
-        ["🔗 Link UPI", "👥 My Referral"]
+        ["📧 Create Gmail", "💰 Balance"],
+        ["🏧 Withdrawal", "🔗 Link UPI"],
     ], resize_keyboard=True)
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    ref = context.args[0] if context.args else None
 
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (user_id, name, referred_by) VALUES (?, ?, ?)",
-            (user.id, user.first_name, ref)
-        )
-        conn.commit()
-
-        # referral reward
-        if ref:
-            cursor.execute("UPDATE users SET balance = balance + 3 WHERE user_id=?", (ref,))
-            conn.commit()
+    cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 0, NULL)",
+                   (user.id, user.first_name))
+    conn.commit()
 
     await update.message.reply_text("Welcome!", reply_markup=menu())
 
-# ================= BALANCE =================
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    cursor.execute("SELECT balance, upi FROM users WHERE user_id=?", (user_id,))
-    bal, upi = cursor.fetchone()
-
-    await update.message.reply_text(
-        f"💰 Balance: ₹{bal}\n🔗 UPI: {upi if upi else 'Not set'}"
-    )
-
-# ================= LINK UPI =================
-async def link_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send UPI ID (example: name@upi)")
-    context.user_data["await_upi"] = True
-
-async def save_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("await_upi"):
-        upi = update.message.text.strip()
-        user_id = update.effective_user.id
-
-        if "@" not in upi:
-            await update.message.reply_text("❌ Invalid UPI")
-            return
-
-        cursor.execute("UPDATE users SET upi=? WHERE user_id=?", (upi, user_id))
-        conn.commit()
-
-        context.user_data["await_upi"] = False
-        await update.message.reply_text("✅ UPI Linked")
-
-# ================= ADMIN ADD TASK =================
-async def add_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await update.message.reply_text("Send tasks:\nTask | reward")
-    context.user_data["add_task"] = True
-
-async def save_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("add_task"):
-        lines = update.message.text.split("\n")
-
-        for line in lines:
-            try:
-                desc, reward = line.split("|")
-                cursor.execute(
-                    "INSERT INTO tasks (description, reward, status) VALUES (?, ?, ?)",
-                    (desc.strip(), int(reward.strip()), "active")
-                )
-            except:
-                pass
-
-        conn.commit()
-        context.user_data["add_task"] = False
-        await update.message.reply_text("✅ Tasks Added")
-
-# ================= EARN TASK =================
-async def earn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    cursor.execute("""
-        SELECT t.id, t.description, t.reward 
-        FROM tasks t
-        WHERE t.status='active'
-        LIMIT 1
-    """)
+# ================= CREATE GMAIL =================
+async def create_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute("SELECT id, gmail FROM gmail_tasks WHERE status='available' LIMIT 1")
     task = cursor.fetchone()
 
     if not task:
-        await update.message.reply_text("No tasks available")
+        await update.message.reply_text("No Gmail available.")
         return
 
-    task_id, desc, reward = task
+    task_id, gmail = task
 
-    cursor.execute(
-        "INSERT INTO user_tasks (user_id, task_id, status) VALUES (?, ?, ?)",
-        (user_id, task_id, "pending")
-    )
-    conn.commit()
+    context.user_data["gmail_task"] = task_id
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Done", callback_data=f"done_{task_id}")]
+        [InlineKeyboardButton("✅ Done", callback_data="gmail_done")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="gmail_cancel")]
     ])
 
     await update.message.reply_text(
-        f"📋 Task:\n{desc}\n\n💰 ₹{reward}",
+        f"📧 Gmail: {gmail}\n💰 Reward: ₹17\n\nClick Done after creating",
         reply_markup=keyboard
     )
 
-# ================= TASK DONE =================
-async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= DONE =================
+async def gmail_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    task_id = int(query.data.split("_")[1])
-    user_id = query.from_user.id
+    user = query.from_user
+    task_id = context.user_data.get("gmail_task")
 
-    cursor.execute("SELECT reward FROM tasks WHERE id=?", (task_id,))
-    reward = cursor.fetchone()[0]
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"gapprove_{task_id}_{user.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"greject_{task_id}_{user.id}")
+        ]
+    ])
 
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (reward, user_id))
-    cursor.execute("UPDATE user_tasks SET status='done' WHERE user_id=? AND task_id=?", (user_id, task_id))
-    conn.commit()
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"📧 Gmail Done\n👤 {user.first_name}\nTask ID: {task_id}",
+        reply_markup=keyboard
+    )
 
-    await query.edit_message_text(f"✅ Task Completed! ₹{reward} added")
+    await query.edit_message_text("⏳ Sent for approval")
+
+# ================= ADMIN APPROVE =================
+async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("_")
+    action = data[0]
+    task_id = int(data[1])
+    user_id = int(data[2])
+
+    if action == "gapprove":
+        cursor.execute("UPDATE gmail_tasks SET status='used' WHERE id=?", (task_id,))
+        cursor.execute("UPDATE users SET balance = balance + 17 WHERE user_id=?", (user_id,))
+        conn.commit()
+
+        await context.bot.send_message(user_id, "✅ Approved! ₹17 added")
+        await query.edit_message_text("Approved")
+
+    elif action == "greject":
+        cursor.execute("UPDATE gmail_tasks SET status='available' WHERE id=?", (task_id,))
+        conn.commit()
+
+        await context.bot.send_message(user_id, "❌ Rejected")
+        await query.edit_message_text("Rejected")
+
+# ================= BALANCE =================
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute("SELECT balance, upi FROM users WHERE user_id=?", (update.effective_user.id,))
+    bal, upi = cursor.fetchone()
+
+    await update.message.reply_text(f"💰 ₹{bal}\nUPI: {upi}")
+
+# ================= LINK UPI =================
+async def link_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send UPI ID")
+    context.user_data["upi"] = True
+
+async def save_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("upi"):
+        cursor.execute("UPDATE users SET upi=? WHERE user_id=?",
+                       (update.message.text, update.effective_user.id))
+        conn.commit()
+        context.user_data["upi"] = False
+        await update.message.reply_text("UPI Saved")
 
 # ================= WITHDRAW =================
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    cursor.execute("SELECT balance, upi, name FROM users WHERE user_id=?", (user_id,))
-    bal, upi, name = cursor.fetchone()
+    cursor.execute("SELECT balance, upi FROM users WHERE user_id=?", (user_id,))
+    bal, upi = cursor.fetchone()
 
     if bal < 50:
-        await update.message.reply_text("Minimum ₹50 required")
+        await update.message.reply_text("Min ₹50 required")
         return
 
-    if not upi:
-        await update.message.reply_text("Link UPI first")
-        return
-
-    cursor.execute(
-        "INSERT INTO withdrawals (user_id, amount, upi, status) VALUES (?, ?, ?, ?)",
-        (user_id, bal, upi, "pending")
-    )
+    cursor.execute("INSERT INTO withdrawals VALUES (NULL, ?, ?, ?, 'pending')",
+                   (user_id, bal, upi))
     wid = cursor.lastrowid
 
     cursor.execute("UPDATE users SET balance=0 WHERE user_id=?", (user_id,))
@@ -217,61 +174,73 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
+            InlineKeyboardButton("✅ Approve", callback_data=f"wapprove_{wid}_{user_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"wreject_{wid}_{user_id}")
         ]
     ])
 
     await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"💸 Withdrawal\n👤 {name}\n💰 ₹{bal}\n🔗 {upi}\nID:{wid}",
+        ADMIN_ID,
+        f"💸 Withdraw ₹{bal}\nUPI: {upi}",
         reply_markup=keyboard
     )
 
     await update.message.reply_text("Request sent")
 
-# ================= ADMIN ACTION =================
-async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= WITHDRAW ADMIN =================
+async def withdraw_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    action, wid = query.data.split("_")
-    wid = int(wid)
+    data = query.data.split("_")
+    action = data[0]
+    wid = int(data[1])
+    user_id = int(data[2])
 
-    cursor.execute("SELECT user_id, amount FROM withdrawals WHERE id=?", (wid,))
-    user_id, amount = cursor.fetchone()
+    cursor.execute("SELECT amount FROM withdrawals WHERE id=?", (wid,))
+    amount = cursor.fetchone()[0]
 
-    if action == "approve":
+    if action == "wapprove":
         cursor.execute("UPDATE withdrawals SET status='approved' WHERE id=?", (wid,))
         conn.commit()
+        await context.bot.send_message(user_id, "✅ Withdrawal Approved")
 
-        await context.bot.send_message(user_id, f"✅ Withdrawal Approved ₹{amount}")
-        await query.edit_message_text("Approved")
-
-    elif action == "reject":
+    elif action == "wreject":
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
         cursor.execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (wid,))
         conn.commit()
+        await context.bot.send_message(user_id, "❌ Rejected, refunded")
 
-        await context.bot.send_message(user_id, f"❌ Rejected ₹{amount} refunded")
-        await query.edit_message_text("Rejected")
+    await query.edit_message_text("Done")
 
-# ================= REFERRAL =================
-async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    link = f"https://t.me/YOUR_BOT?start={user_id}"
+# ================= ADMIN ADD GMAIL =================
+async def add_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
 
-    await update.message.reply_text(f"🔗 Your Link:\n{link}\nEarn ₹3 per referral")
+    await update.message.reply_text("Send Gmail list (one per line)")
+    context.user_data["add_gmail"] = True
+
+async def save_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("add_gmail"):
+        lines = update.message.text.split("\n")
+
+        for g in lines:
+            cursor.execute("INSERT INTO gmail_tasks (gmail, status) VALUES (?, 'available')", (g.strip(),))
+
+        conn.commit()
+        context.user_data["add_gmail"] = False
+        await update.message.reply_text("✅ Gmail Added")
 
 # ================= HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    if text == "💰 Balance":
-        await balance(update, context)
+    if text == "📧 Create Gmail":
+        await create_gmail(update, context)
 
-    elif text == "🎯 Earn Tasks":
-        await earn(update, context)
+    elif text == "💰 Balance":
+        await balance(update, context)
 
     elif text == "🏧 Withdrawal":
         await withdraw(update, context)
@@ -279,20 +248,20 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Link UPI":
         await link_upi(update, context)
 
-    elif text == "👥 My Referral":
-        await referral(update, context)
-
     else:
         await save_upi(update, context)
-        await save_tasks(update, context)
+        await save_gmail(update, context)
 
 # ================= RUN =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("addtasks", add_tasks))
+app.add_handler(CommandHandler("addgmail", add_gmail))
+
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-app.add_handler(CallbackQueryHandler(task_done, pattern="done_"))
-app.add_handler(CallbackQueryHandler(admin_actions, pattern="approve_|reject_"))
+
+app.add_handler(CallbackQueryHandler(gmail_done, pattern="gmail_done"))
+app.add_handler(CallbackQueryHandler(admin_actions, pattern="gapprove_|greject_"))
+app.add_handler(CallbackQueryHandler(withdraw_admin, pattern="wapprove_|wreject_"))
 
 app.run_polling()
