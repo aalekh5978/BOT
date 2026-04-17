@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import random
 from telegram import (
     Update, ReplyKeyboardMarkup,
     InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,7 +12,7 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 2097179248  # change if needed
+ADMIN_ID = 2097179248
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
@@ -29,7 +30,9 @@ CREATE TABLE IF NOT EXISTS users (
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS gmail_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gmail TEXT,
+    name TEXT,
+    email TEXT,
+    password TEXT,
     status TEXT
 )
 """)
@@ -50,7 +53,7 @@ conn.commit()
 def menu():
     return ReplyKeyboardMarkup([
         ["📧 Create Gmail", "💰 Balance"],
-        ["🏧 Withdrawal", "🔗 Link UPI"],
+        ["🏧 Withdrawal", "🔗 Link UPI"]
     ], resize_keyboard=True)
 
 # ================= START =================
@@ -65,16 +68,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= CREATE GMAIL =================
 async def create_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT id, gmail FROM gmail_tasks WHERE status='available' LIMIT 1")
-    task = cursor.fetchone()
+    cursor.execute("""
+        SELECT id, name, email, password 
+        FROM gmail_tasks 
+        WHERE status='available'
+    """)
+    tasks = cursor.fetchall()
 
-    if not task:
-        await update.message.reply_text("No Gmail available.")
+    if not tasks:
+        await update.message.reply_text("❌ No Gmail available")
         return
 
-    task_id, gmail = task
+    task = random.choice(tasks)  # 🔥 SHUFFLE
+    task_id, name, email, password = task
 
     context.user_data["gmail_task"] = task_id
+    context.user_data["gmail_data"] = (name, email, password)
+
+    cursor.execute("UPDATE gmail_tasks SET status='assigned' WHERE id=?", (task_id,))
+    conn.commit()
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Done", callback_data="gmail_done")],
@@ -82,7 +94,16 @@ async def create_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.message.reply_text(
-        f"📧 Gmail: {gmail}\n💰 Reward: ₹17\n\nClick Done after creating",
+        f"""📧 *Register Gmail Account*
+
+👤 Name: `{name}`
+📧 Email: `{email}`
+🔑 Password: `{password}`
+
+🔐 Use exact data or task will be rejected.
+
+💰 Reward: ₹17""",
+        parse_mode="Markdown",
         reply_markup=keyboard
     )
 
@@ -93,6 +114,7 @@ async def gmail_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = query.from_user
     task_id = context.user_data.get("gmail_task")
+    name, email, password = context.user_data.get("gmail_data")
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -103,13 +125,38 @@ async def gmail_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         ADMIN_ID,
-        f"📧 Gmail Done\n👤 {user.first_name}\nTask ID: {task_id}",
+        f"""📧 Gmail Completed
+
+👤 User: {user.first_name}
+🆔 ID: {user.id}
+
+👤 Name: `{name}`
+📧 Email: `{email}`
+🔑 Password: `{password}`
+
+Task ID: {task_id}""",
+        parse_mode="Markdown",
         reply_markup=keyboard
     )
 
     await query.edit_message_text("⏳ Sent for approval")
 
-# ================= ADMIN APPROVE =================
+# ================= CANCEL =================
+async def gmail_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    task_id = context.user_data.get("gmail_task")
+
+    if task_id:
+        cursor.execute("UPDATE gmail_tasks SET status='available' WHERE id=?", (task_id,))
+        conn.commit()
+
+    context.user_data.clear()
+
+    await query.edit_message_text("❌ Task cancelled")
+
+# ================= ADMIN APPROVAL =================
 async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -218,19 +265,25 @@ async def add_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    await update.message.reply_text("Send Gmail list (one per line)")
+    await update.message.reply_text("Send: name,email,password")
     context.user_data["add_gmail"] = True
 
 async def save_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("add_gmail"):
-        lines = update.message.text.split("\n")
+        try:
+            name, email, password = update.message.text.split(",")
 
-        for g in lines:
-            cursor.execute("INSERT INTO gmail_tasks (gmail, status) VALUES (?, 'available')", (g.strip(),))
+            cursor.execute("""
+                INSERT INTO gmail_tasks (name, email, password, status)
+                VALUES (?, ?, ?, 'available')
+            """, (name.strip(), email.strip(), password.strip()))
 
-        conn.commit()
-        context.user_data["add_gmail"] = False
-        await update.message.reply_text("✅ Gmail Added")
+            conn.commit()
+
+            await update.message.reply_text("✅ Gmail Added")
+
+        except:
+            await update.message.reply_text("❌ Format: name,email,password")
 
 # ================= HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,6 +314,7 @@ app.add_handler(CommandHandler("addgmail", add_gmail))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 app.add_handler(CallbackQueryHandler(gmail_done, pattern="gmail_done"))
+app.add_handler(CallbackQueryHandler(gmail_cancel, pattern="gmail_cancel"))
 app.add_handler(CallbackQueryHandler(admin_actions, pattern="gapprove_|greject_"))
 app.add_handler(CallbackQueryHandler(withdraw_admin, pattern="wapprove_|wreject_"))
 
