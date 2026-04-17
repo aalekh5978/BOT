@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 2097179248  # change if needed
+ADMIN_ID = 2097179248
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
@@ -32,8 +32,7 @@ CREATE TABLE IF NOT EXISTS gmail_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
     email TEXT,
-    password TEXT,
-    status TEXT
+    password TEXT
 )
 """)
 
@@ -59,14 +58,18 @@ def menu():
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 0, NULL)",
-                   (user.id, user.first_name))
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO users VALUES (?, ?, 0, NULL)",
+        (user.id, user.first_name)
+    )
     conn.commit()
+
     await update.message.reply_text("Welcome!", reply_markup=menu())
 
 # ================= CREATE GMAIL =================
 async def create_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT id, name, email, password FROM gmail_tasks WHERE status='available'")
+    cursor.execute("SELECT id, name, email, password FROM gmail_tasks")
     tasks = cursor.fetchall()
 
     if not tasks:
@@ -75,9 +78,6 @@ async def create_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task = random.choice(tasks)
     task_id, name, email, password = task
-
-    cursor.execute("UPDATE gmail_tasks SET status='assigned' WHERE id=?", (task_id,))
-    conn.commit()
 
     context.user_data["gmail"] = (task_id, name, email, password)
 
@@ -134,12 +134,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = context.user_data.get("gmail")
-    if data:
-        task_id = data[0]
-        cursor.execute("UPDATE gmail_tasks SET status='available' WHERE id=?", (task_id,))
-        conn.commit()
-
     context.user_data.clear()
     await query.edit_message_text("❌ Cancelled")
 
@@ -153,7 +147,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = int(user_id)
 
     if action == "gok":
-        cursor.execute("UPDATE gmail_tasks SET status='used' WHERE id=?", (task_id,))
+        cursor.execute("DELETE FROM gmail_tasks WHERE id=?", (task_id,))
         cursor.execute("UPDATE users SET balance = balance + 17 WHERE user_id=?", (user_id,))
         conn.commit()
 
@@ -161,10 +155,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Approved")
 
     elif action == "gno":
-        cursor.execute("UPDATE gmail_tasks SET status='available' WHERE id=?", (task_id,))
-        conn.commit()
-
-        await context.bot.send_message(user_id, "❌ Rejected")
+        await context.bot.send_message(user_id, "❌ Rejected (already approved or invalid)")
         await query.edit_message_text("Rejected")
 
 # ================= BALANCE =================
@@ -180,15 +171,18 @@ async def link_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def save_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("upi"):
-        cursor.execute("UPDATE users SET upi=? WHERE user_id=?",
-                       (update.message.text, update.effective_user.id))
+        cursor.execute(
+            "UPDATE users SET upi=? WHERE user_id=?",
+            (update.message.text, update.effective_user.id)
+        )
         conn.commit()
-        context.user_data["upi"] = False
-        await update.message.reply_text("UPI Saved")
+        context.user_data.clear()
+        await update.message.reply_text("✅ UPI Saved")
 
 # ================= WITHDRAW =================
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     cursor.execute("SELECT balance, upi FROM users WHERE user_id=?", (user_id,))
     bal, upi = cursor.fetchone()
 
@@ -196,8 +190,10 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Min ₹50 required")
         return
 
-    cursor.execute("INSERT INTO withdrawals VALUES (NULL, ?, ?, ?, 'pending')",
-                   (user_id, bal, upi))
+    cursor.execute(
+        "INSERT INTO withdrawals VALUES (NULL, ?, ?, ?, 'pending')",
+        (user_id, bal, upi)
+    )
     wid = cursor.lastrowid
 
     cursor.execute("UPDATE users SET balance=0 WHERE user_id=?", (user_id,))
@@ -265,18 +261,24 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.from_user.id != ADMIN_ID:
         return
 
+    context.user_data.clear()  # 🔥 clear old states
+
     if query.data == "admin_add":
-        context.user_data["add"] = True
+        context.user_data["mode"] = "add"
         await query.message.reply_text("Send: name,email,password")
+
+    elif query.data == "admin_broadcast":
+        context.user_data["mode"] = "broadcast"
+        await query.message.reply_text("Send message to broadcast")
 
     elif query.data == "admin_stats":
         cursor.execute("SELECT COUNT(*) FROM users")
         users = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM gmail_tasks WHERE status='available'")
-        available = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM gmail_tasks")
+        gmails = cursor.fetchone()[0]
 
-        await query.message.reply_text(f"Users: {users}\nAvailable Gmail: {available}")
+        await query.message.reply_text(f"👥 Users: {users}\n📧 Gmails: {gmails}")
 
     elif query.data == "admin_withdraw":
         cursor.execute("SELECT id, user_id, amount, upi FROM withdrawals WHERE status='pending'")
@@ -289,47 +291,51 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("❌ Reject", callback_data=f"wno_{wid}_{user_id}")
                 ]
             ])
+
             await query.message.reply_text(
                 f"User: {user_id}\n₹{amount}\nUPI: {upi}",
                 reply_markup=keyboard
             )
 
-    elif query.data == "admin_broadcast":
-        context.user_data["broadcast"] = True
-        await query.message.reply_text("Send message")
-
-# ================= SAVE ADMIN INPUT =================
+# ================= ADMIN INPUT =================
 async def admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    if context.user_data.get("add"):
-        try:
-            name, email, password = update.message.text.split(",")
+    mode = context.user_data.get("mode")
+    text = update.message.text
 
-            cursor.execute("""
-                INSERT INTO gmail_tasks (name, email, password, status)
-                VALUES (?, ?, ?, 'available')
-            """, (name.strip(), email.strip(), password.strip()))
-
-            conn.commit()
-
-            await update.message.reply_text("✅ Gmail Added")
-        except:
-            await update.message.reply_text("❌ Format: name,email,password")
-
-    elif context.user_data.get("broadcast"):
+    if mode == "broadcast":
         cursor.execute("SELECT user_id FROM users")
         users = cursor.fetchall()
 
+        sent = 0
         for u in users:
             try:
-                await context.bot.send_message(u[0], update.message.text)
+                await context.bot.send_message(u[0], text)
+                sent += 1
             except:
                 pass
 
-        await update.message.reply_text("✅ Broadcast Sent")
-        context.user_data["broadcast"] = False
+        await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
+        context.user_data.clear()
+
+    elif mode == "add":
+        try:
+            name, email, password = text.split(",")
+
+            cursor.execute("""
+                INSERT INTO gmail_tasks (name, email, password)
+                VALUES (?, ?, ?)
+            """, (name.strip(), email.strip(), password.strip()))
+
+            conn.commit()
+            await update.message.reply_text("✅ Gmail Added")
+
+        except:
+            await update.message.reply_text("❌ Format: name,email,password")
+
+        context.user_data.clear()
 
 # ================= HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
