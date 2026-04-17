@@ -245,11 +245,13 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Gmail", callback_data="admin_add")],
-        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
-        [InlineKeyboardButton("💸 Withdraw Requests", callback_data="admin_withdraw")],
-        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")]
-    ])
+    [InlineKeyboardButton("➕ Add Gmail", callback_data="admin_add")],
+    [InlineKeyboardButton("💰 Add Balance", callback_data="admin_addbal")],
+    [InlineKeyboardButton("➖ Deduct Balance", callback_data="admin_cutbal")],
+    [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
+    [InlineKeyboardButton("💸 Withdraw Requests", callback_data="admin_withdraw")],
+    [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")]
+])
 
     await update.message.reply_text("⚙️ ADMIN PANEL", reply_markup=keyboard)
 
@@ -266,6 +268,16 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "admin_add":
         context.user_data["mode"] = "add"
         await query.message.reply_text("Send: name,email,password")
+
+    elif query.data == "admin_addbal":
+    context.user_data.clear()
+    context.user_data["mode"] = "add_balance"
+    await query.message.reply_text("Send: user_id,amount")
+
+elif query.data == "admin_cutbal":
+    context.user_data.clear()
+    context.user_data["mode"] = "cut_balance"
+    await query.message.reply_text("Send: user_id,amount")
 
     elif query.data == "admin_broadcast":
         context.user_data["mode"] = "broadcast"
@@ -305,31 +317,31 @@ async def admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     text = update.message.text
 
+    # ================= BROADCAST =================
     if mode == "broadcast":
         cursor.execute("SELECT user_id FROM users")
         users = cursor.fetchall()
 
-        sent = 0
         for u in users:
             try:
                 await context.bot.send_message(u[0], text)
-                sent += 1
             except:
                 pass
 
-        await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
+        await update.message.reply_text("✅ Broadcast Sent")
         context.user_data.clear()
 
+    # ================= ADD GMAIL =================
     elif mode == "add":
         try:
             name, email, password = text.split(",")
 
-            cursor.execute("""
-                INSERT INTO gmail_tasks (name, email, password)
-                VALUES (?, ?, ?)
-            """, (name.strip(), email.strip(), password.strip()))
-
+            cursor.execute(
+                "INSERT INTO gmail_tasks (name, email, password) VALUES (?, ?, ?)",
+                (name.strip(), email.strip(), password.strip())
+            )
             conn.commit()
+
             await update.message.reply_text("✅ Gmail Added")
 
         except:
@@ -337,6 +349,47 @@ async def admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data.clear()
 
+    # ================= ADD BALANCE =================
+    elif mode == "add_balance":
+        try:
+            user_id, amount = text.split(",")
+            user_id = int(user_id.strip())
+            amount = int(amount.strip())
+
+            cursor.execute(
+                "UPDATE users SET balance = balance + ? WHERE user_id=?",
+                (amount, user_id)
+            )
+            conn.commit()
+
+            await context.bot.send_message(user_id, f"💰 ₹{amount} added to your balance")
+            await update.message.reply_text("✅ Balance added")
+
+        except:
+            await update.message.reply_text("❌ Format: user_id,amount")
+
+        context.user_data.clear()
+
+    # ================= CUT BALANCE =================
+    elif mode == "cut_balance":
+        try:
+            user_id, amount = text.split(",")
+            user_id = int(user_id.strip())
+            amount = int(amount.strip())
+
+            cursor.execute(
+                "UPDATE users SET balance = balance - ? WHERE user_id=?",
+                (amount, user_id)
+            )
+            conn.commit()
+
+            await context.bot.send_message(user_id, f"➖ ₹{amount} deducted")
+            await update.message.reply_text("✅ Balance deducted")
+
+        except:
+            await update.message.reply_text("❌ Format: user_id,amount")
+
+        context.user_data.clear()
 # ================= HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
