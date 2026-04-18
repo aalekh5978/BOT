@@ -11,9 +11,11 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 2097179248
-ADMIN_ID = 8164261864
+ADMIN_IDS = [2097179248, 8164261864]
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
