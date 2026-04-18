@@ -13,6 +13,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = 2097179248
+ADMIN_ID = 8164261864
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
